@@ -2,8 +2,11 @@
 import logging
 from logging.handlers import RotatingFileHandler   # logging 추가
 from flask import Flask
+from werkzeug.security import generate_password_hash
+from .extensions import db, migrate, login_manager, csrf
 from .config import Config
 
+# 전역 변수/인스턴스 초기화 (extensions.py에서 정의)
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -16,11 +19,77 @@ def create_app():
         file_handler.setLevel(logging.INFO) 
         app.logger.addHandler(file_handler) 
         app.logger.setLevel(logging.INFO)
+    # 확장 기능 초기화 연계
+    db.init_app(app)                      # flask 앱에 db연결
+    migrate.init_app(app,db)              # 없으면, flask db 명령어를 사용불가
+    login_manager.init_app(app)  # flask 앱에 로그인 관리 연결
+    csrf.init_app(app)                    # flask 앱에 CSRF 보호 연결 
 
-# main 블루프린트 등록
-    from .main import main 
+    # Flask-Login: 사용자 로더 설정 (auth 블루프린트에서 import하여 사용)
+    # create_app() 정의 또는 auth/__init__.py 정의하여 login_manager.user_loader 데코레이터와 함께 사용
+    from apps.dbmodels import User  # User 모델 임포트
+    @login_manager.user_loader
+    def load_user(user_id):   # Flask-Login이 user_id를 기반으로 사용자 객체를 로드
+        return User.query.get(int(user_id))
+    # Flask-Login: Unauthorized Error 핸들링, login_view와 같은 기능이나, next 값 자동전달
+    @login_manager.unauthorized_handler
+    def unauthorized():
+        """로그인되지 않은 사용자가 @login_required 페이지에 접근 시 redirect"""
+        from flask import flash, redirect, url_for, request
+        flash('로그인이 필요합니다.', 'warning')
+        return redirect(url_for('auth.login', next=request.path))
+    # 블루프린트 등록
+    from .main import main
+    from .auth import auth
+
     app.register_blueprint(main)
+    app.register_blueprint(auth, url_prefix='/auth')
+    # db 테이블 생성 및 관리자 초기계정 생성
+    with app.app_context():
+        #db.drop_all()         # 운영시에는 커멘트 처리 필요
+        db.create_all()       # 테이블 생성
+
+    """
+        # 최초 관리자 계정 생성
+        admin_username = app.config.get('ADMIN_USERNAME')
+        admin_password = app.config.get('ADMIN_PASSWORD')
+
+        if admin_username and admin_password:
+            admin_user = User.query.filter_by(username=admin_username).first()
+            if not admin_user:
+                hashed_password = generate_password_hash(admin_password)
+                new_admin = User(username=admin_username, password=hashed_password, is_admin=True)
+                db.session.add(new_admin)
+                db.session.commit()
+                print(f"관리자 계정 '{admin_username}'이(가) 생성되었습니다.")
+            else:
+                print(f"관리자 계정 '{admin_username}'이(가) 이미 존재합니다.")
+        else:
+            print("ADMIN_USERNAME 또는 ADMIN_PASSWORD 환경 변수가 설정되지 않았습니다.")
+    """
     return app
+"""
+        # 테스트용 API 키 생성 (선택 사항)
+        user = User.query.filter_by(username='test_user').first()
+        if not user:
+            # 테스트 유저가 없다면 생성 (예시)
+            hashed_password = generate_password_hash("test_password")
+            user = User(username='test_user', password=hashed_password, is_admin=False)
+            db.session.add(user)
+            db.session.commit()
+            print("테스트 사용자 'test_user'가 생성되었습니다.")
+
+        if user:
+            existing_key = APIKey.query.filter_by(user_id=user.id).first()
+            if not existing_key:
+                new_api_key = APIKey.generate_key(user.id)
+                db.session.add(new_api_key)
+                db.session.commit()
+                print(f"테스트 사용자 '{user.username}'을(를) 위한 API 키가 생성되었습니다: {new_api_key.key}")
+            else:
+                print(f"테스트 사용자 '{user.username}'은(는) 이미 API 키를 가지고 있습니다: {existing_key.key}")
+"""
+
 
 
 
